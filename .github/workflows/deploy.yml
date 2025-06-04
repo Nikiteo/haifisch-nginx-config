@@ -1,0 +1,65 @@
+name: Deploy NGINX Config
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy configs via SCP
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: '87.242.119.108'
+          username: 'nikiteo'
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: './configs/*.conf'
+          target: '/tmp/nginx-configs'
+          strip_components: 1
+          rm: true
+
+      - name: Apply configs and reload nginx
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: '87.242.119.108'
+          username: 'nikiteo'
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            echo "🔎 Checking for uploaded config files..."
+            if [ -z "$(ls /tmp/nginx-configs/*.conf 2>/dev/null)" ]; then
+              echo "❌ No .conf files found in /tmp/nginx-configs/"
+              sudo ls -la /tmp/nginx-configs
+              exit 1
+            fi
+
+            echo "🚮 Removing broken ssl-params.conf symlink if exists"
+            if [ -L "/etc/nginx/sites-enabled/ssl-params.conf" ]; then
+              sudo rm /etc/nginx/sites-enabled/ssl-params.conf
+            fi
+
+            echo "📂 Copying configs to /etc/nginx/sites-available/"
+            sudo cp -f /tmp/nginx-configs/*.conf /etc/nginx/sites-available/
+            sudo chown root:root /etc/nginx/sites-available/*.conf
+            sudo chmod 644 /etc/nginx/sites-available/*.conf
+
+            echo "🔗 Ensuring symlinks in sites-enabled"
+            for file in /tmp/nginx-configs/*.conf; do
+              filename=$(basename "$file")
+              if [ "$filename" != "ssl-params.conf" ] && [ ! -L "/etc/nginx/sites-enabled/$filename" ]; then
+                echo "Creating symlink for $filename"
+                sudo ln -sf "/etc/nginx/sites-available/$filename" "/etc/nginx/sites-enabled/$filename"
+              fi
+            done
+
+            echo "🔍 Testing NGINX config"
+            sudo nginx -t || (echo "❌ Configuration error"; exit 1)
+
+            echo "🔄 Reloading NGINX"
+            sudo systemctl reload nginx
+            echo "✅ Success"
